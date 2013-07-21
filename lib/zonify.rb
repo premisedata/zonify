@@ -111,6 +111,7 @@ class AWS
   def load_balancers
     elb.load_balancers.map do |elb|
       { :instances => elb.instances,
+        :dns_name  => elb.dns_name,
         :prefix    => Zonify.cut_down_elb_name(elb.dns_name) }
     end
   end
@@ -181,9 +182,8 @@ def zone(hosts, elbs)
     end.compact
   end.flatten
   elb_records = elbs.map do |elb|
-    running = elb[:instances].select{|i| hosts[i] }
     name = "#{elb[:prefix]}.elb."
-    running.map{|host| Zonify::RR.srv(name, "#{host}.inst.") }
+    [ Zonify::RR.cname(name, elb[:dns_name]) ]
   end.flatten
   sg_records = hosts.inject({}) do |acc, kv|
     id, info = kv
