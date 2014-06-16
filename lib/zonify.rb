@@ -149,6 +149,7 @@ extend self
 
 module Resolve
 SRV_PREFIX = '_*._*'
+MAX_RECORD_LENGTH = 64
 end
 
 # Records are all created with functions in this module, which ensures the
@@ -156,12 +157,13 @@ end
 module RR
 extend self
   def srv(service, name)
+    service = service[0...(Zonify::Resolve::MAX_RECORD_LENGTH-Zonify::Resolve::SRV_PREFIX.length)]
     { :type=>'SRV', :value=>"0 0 0 #{Zonify.dot_(name)}",
       :ttl=>'100',  :name=>"#{Zonify::Resolve::SRV_PREFIX}.#{service}" }
   end
   def cname(name, dns, ttl='100')
     { :type=>'CNAME', :value=>Zonify.dot_(dns),
-      :ttl=>ttl,      :name=>Zonify.dot_(name) }
+      :ttl=>ttl,      :name=>Zonify.dot_(name[0...Zonify::Resolve::MAX_RECORD_LENGTH]) }
   end
 end
 
@@ -171,8 +173,8 @@ def zone(hosts, elbs)
   host_records = hosts.map do |id,info|
     name = "#{id}.inst."
     priv = "#{info[:priv]}.priv."
-    [ Zonify::RR.cname(name, info[:dns], '86400'),
-      Zonify::RR.cname(priv, info[:dns], '86400'),
+    [ Zonify::RR.cname(name, info[:dns], '600'),
+      Zonify::RR.cname(priv, info[:dns], '600'),
       Zonify::RR.srv('inst.', name) ] +
     info[:tags].map do |tag|
       k, v = tag
@@ -291,10 +293,15 @@ def cname_multitudinous(tree)
     name_clipped = name.sub("#{Zonify::Resolve::SRV_PREFIX}.", '')
     info.each do |type, data|
       if 'SRV' == type and 1 < data[:value].length
+        max_records = 100
+        record_count = 0
         wrrs = data[:value].inject({}) do |accumulator, rr|
-          server = Zonify.dot_(rr.sub(/^([^ ]+ +){3}/, '').strip)
-          id = server.split('.').first # Always the isntance ID.
-          accumulator[id] = data.merge(:value=>[server], :weight=>"16")
+          if record_count < max_records
+            server = Zonify.dot_(rr.sub(/^([^ ]+ +){3}/, '').strip)
+            id = server.split('.').first # Always the isntance ID.
+            accumulator[id] = data.merge(:value=>[server], :weight=>"16")
+            record_count += 1
+          end
           accumulator
         end
         acc[name_clipped] = { 'CNAME' => wrrs }
@@ -339,7 +346,7 @@ def merge(*trees)
           d = data.merge(acc_[type])
           acc_[type] = d
         else # Not WRR records.
-          acc_[type][:value] = (data[:value] + acc_[type][:value]).sort.uniq
+          acc_[type][:value] = (data[:value] + acc_[type][:value]).uniq.sort
         end
         acc_
       end
@@ -433,18 +440,11 @@ end
 LDH_RE = /^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])$/
 def string_to_ldh_component(s)
   LDH_RE.match(s) ? s.downcase : s.downcase.gsub(/[^a-z0-9-]/, '-').
-                                            sub(/(^[-]+|[-]+$)/, '')[0...64]
+                                            sub(/(^[-]+|[-]+$)/, '')[0,63]
 end
 
 def string_to_ldh(s)
-  head, *tail = s.split('.')
-  tail_ = tail.map{|s| string_to_ldh_component(s) }
-  head_ = case head
-          when '*' then '*'
-          when nil then ''
-          else          string_to_ldh_component(head)
-          end
-  [head_, tail_].flatten.select{|c| not (c.empty? or c.nil?) }.join('.')
+  s.split('.').map{|s| string_to_ldh_component(s) }.join('.')
 end
 
 def _dot(s)
@@ -569,8 +569,7 @@ extend self
                     end
                   end
                 end
-          normed = (rrs + (acc_[type][:value] or [])).sort.uniq if rrs
-          addenda = normed ? { :value => normed } : {}
+          addenda = rrs ? { :value => rrs + (acc_[type][:value] or []) } : {}
           acc_[type] = data.merge(addenda)
           acc_
         end
